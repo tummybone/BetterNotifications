@@ -1,5 +1,5 @@
 /**
- * @name GlobalNotificationSettings
+ * @name BetterNotifications
  * @author tummybone
  * @description Quickly change notification and mention settings for all or individual Discord servers.
  * @version 1.5.0
