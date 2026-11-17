@@ -47,21 +47,44 @@ module.exports = class ServerSignals {
     return BdApi.Webpack.getStore("UserGuildSettingsStore");
   }
 
-  async updateGuild(guildId, settings) {
+  getGuildUpdater() {
     const notificationActions = this.getNotificationActions();
     if (notificationActions) {
-      return notificationActions.updateGuildNotificationSettings(guildId, settings);
+      return (guildId, settings) => notificationActions.updateGuildNotificationSettings(guildId, settings);
     }
 
     const rest = this.getRestApi();
     if (rest?.patch) {
-      return rest.patch({
+      return (guildId, settings) => rest.patch({
         url: `/users/@me/guilds/${guildId}/settings`,
         body: settings
       });
     }
 
     throw new Error("Discord's notification module could not be found.");
+  }
+
+  buildNotificationSettings({
+    level,
+    suppressEveryone,
+    suppressRoles,
+    suppressHighlights,
+    muteScheduledEvents,
+    mobilePush
+  }) {
+    return {
+      message_notifications: level,
+      suppress_everyone: suppressEveryone,
+      suppress_roles: suppressRoles,
+      notify_highlights: suppressHighlights ? 2 : 0,
+      mute_scheduled_events: muteScheduledEvents,
+      mobile_push: mobilePush
+    };
+  }
+
+  async updateGuild(guildId, settings) {
+    const updateGuildNotificationSettings = this.getGuildUpdater();
+    return updateGuildNotificationSettings(guildId, settings);
   }
 
   wait(ms) {
@@ -98,36 +121,41 @@ module.exports = class ServerSignals {
       return;
     }
 
+    const updateGuild = this.getGuildUpdater();
     this.running = true;
     button.disabled = true;
+
     let updated = 0;
     let failed = 0;
 
-    for (const guildId of ids) {
-      status.textContent = `Updating ${updated + failed + 1} of ${ids.length}…`;
-      try {
-        const settings = {
-          message_notifications: level,
-          suppress_everyone: suppressEveryone,
-          suppress_roles: suppressRoles,
-          notify_highlights: suppressHighlights ? 2 : 0,
-          mute_scheduled_events: muteScheduledEvents,
-          mobile_push: mobilePush
-        };
+    try {
+      for (const [index, guildId] of ids.entries()) {
+        status.textContent = `Updating ${index + 1} of ${ids.length}…`;
 
-        await this.updateGuild(guildId, settings);
-        updated++;
-      } catch (error) {
-        console.error(`[Server Signals] Could not update guild ${guildId}`, error);
-        failed++;
+        try {
+          await updateGuild(guildId, this.buildNotificationSettings({
+            level,
+            suppressEveryone,
+            suppressRoles,
+            suppressHighlights,
+            muteScheduledEvents,
+            mobilePush
+          }));
+          updated++;
+        } catch (error) {
+          console.error(`[Server Signals] Could not update guild ${guildId}`, error);
+          failed++;
+        }
+
+        if (index < ids.length - 1) {
+          await this.wait(450);
+        }
       }
-
-      // Discord's API is rate limited. A short sequential delay avoids request bursts.
-      await this.wait(450);
+    } finally {
+      this.running = false;
+      button.disabled = false;
     }
 
-    this.running = false;
-    button.disabled = false;
     status.textContent = failed
       ? `Updated ${updated} servers; ${failed} failed. You can safely retry.`
       : `Done — updated all ${updated} servers.`;
@@ -233,14 +261,14 @@ module.exports = class ServerSignals {
       save.disabled = true;
       status.textContent = "Updating…";
       try {
-        await this.updateGuild(guild.id, {
-          message_notifications: Number(select.value),
-          suppress_everyone: suppress.checked,
-          suppress_roles: suppressRoles.checked,
-          notify_highlights: suppressHighlights.checked ? 2 : 0,
-          mute_scheduled_events: muteEvents.checked,
-          mobile_push: mobilePush.checked
-        });
+        await this.updateGuild(guild.id, this.buildNotificationSettings({
+          level: Number(select.value),
+          suppressEveryone: suppress.checked,
+          suppressRoles: suppressRoles.checked,
+          suppressHighlights: suppressHighlights.checked,
+          muteScheduledEvents: muteEvents.checked,
+          mobilePush: mobilePush.checked
+        }));
         status.textContent = "Saved";
         BdApi.UI.showToast(`Updated ${guild.name}`, { type: "success" });
       } catch (error) {
@@ -300,30 +328,26 @@ module.exports = class ServerSignals {
 
     const suppressLabel = document.createElement("label");
     suppressLabel.style.cssText = "display:flex;align-items:center;gap:12px;padding:13px;margin-bottom:8px;border:1px solid var(--border-subtle);border-radius:10px;cursor:pointer;background:var(--background-secondary)";
-
     const suppressInput = document.createElement("input");
     suppressInput.type = "checkbox";
     suppressInput.checked = this.suppressEveryone;
     suppressInput.addEventListener("change", () => {
       this.suppressEveryone = suppressInput.checked;
     });
-
     const suppressText = document.createElement("span");
-    suppressText.innerHTML = '<strong style="display:block;margin-bottom:3px">Suppress @everyone and @here</strong><span style="color:var(--text-muted);font-size:13px">Prevent these mass mentions from sending notifications.</span>';
+    suppressText.innerHTML = '<strong style="display:block;margin-bottom:3px">Suppress @everyone and @here</strong><span style="color:var(--text-muted);font-size:13px">Prevent these mass mentions from notifying you.</span>';
     suppressLabel.append(suppressInput, suppressText);
 
     const suppressRolesLabel = document.createElement("label");
     suppressRolesLabel.style.cssText = "display:flex;align-items:center;gap:12px;padding:13px;margin-bottom:8px;border:1px solid var(--border-subtle);border-radius:10px;cursor:pointer;background:var(--background-secondary)";
-
     const suppressRolesInput = document.createElement("input");
     suppressRolesInput.type = "checkbox";
     suppressRolesInput.checked = this.suppressRoles;
     suppressRolesInput.addEventListener("change", () => {
       this.suppressRoles = suppressRolesInput.checked;
     });
-
     const suppressRolesText = document.createElement("span");
-    suppressRolesText.innerHTML = '<strong style="display:block;margin-bottom:3px">Suppress all role @mentions</strong><span style="color:var(--text-muted);font-size:13px">Prevent role mentions from sending notifications.</span>';
+    suppressRolesText.innerHTML = '<strong style="display:block;margin-bottom:3px">Suppress all role @mentions</strong><span style="color:var(--text-muted);font-size:13px">Prevent role mentions from sounding off in this server.</span>';
     suppressRolesLabel.append(suppressRolesInput, suppressRolesText);
 
     const suppressHighlightsLabel = document.createElement("label");
@@ -335,7 +359,7 @@ module.exports = class ServerSignals {
       this.suppressHighlights = suppressHighlightsInput.checked;
     });
     const suppressHighlightsText = document.createElement("span");
-    suppressHighlightsText.innerHTML = '<strong style="display:block;margin-bottom:3px">Suppress highlights</strong><span style="color:var(--text-muted);font-size:13px">Disable Discord highlight notifications.</span>';
+    suppressHighlightsText.innerHTML = '<strong style="display:block;margin-bottom:3px">Suppress highlights</strong><span style="color:var(--text-muted);font-size:13px">Disable Discord highlight notifications for this server.</span>';
     suppressHighlightsLabel.append(suppressHighlightsInput, suppressHighlightsText);
 
     const muteEventsLabel = document.createElement("label");
@@ -359,7 +383,7 @@ module.exports = class ServerSignals {
       this.mobilePush = mobilePushInput.checked;
     });
     const mobilePushText = document.createElement("span");
-    mobilePushText.innerHTML = '<strong style="display:block;margin-bottom:3px">Mobile push notifications</strong><span style="color:var(--text-muted);font-size:13px">Send this server’s notifications to mobile devices.</span>';
+    mobilePushText.innerHTML = '<strong style="display:block;margin-bottom:3px">Mobile push notifications</strong><span style="color:var(--text-muted);font-size:13px">Send this server’s notifications to your phone.</span>';
     mobilePushLabel.append(mobilePushInput, mobilePushText);
 
     const warning = document.createElement("p");
